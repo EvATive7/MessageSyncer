@@ -257,7 +257,7 @@ async def refresh_worker(getter: Getter) -> RefreshResult:
     logger = logging.getLogger("_refresh_worker")
     prefix = getter.class_name + "_"
 
-    logger.debug(f"start")
+    logger.debug(f"{getter}: start")
     if not getter.available:
         logger.debug(f"unavailable. skipped")
         return []
