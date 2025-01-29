@@ -1,3 +1,4 @@
+#!/bin/bash
 no_dev=false
 for arg in "$@"; do
     case $arg in

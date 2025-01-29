@@ -3,6 +3,7 @@ WORKDIR /MessageSyncer
 RUN apt-get update && apt-get install -y git 
 
 COPY . /MessageSyncer
-RUN bash ./tool/setup.sh --no-dev
+RUN --mount=type=cache,target=/root/.cache \
+    bash ./tool/setup.sh --no-dev
 EXPOSE 11589
-CMD [ "python", "MessageSyncer.py" ]
+ENTRYPOINT [ "./tool/run.sh" ]
