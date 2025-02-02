@@ -25,7 +25,7 @@ def _migrate():
             log.info("Old adapters path detected")
             for item in old_path.iterdir():
                 try:
-                    shutil.move(str(item), str(adapter_classes_path))
+                    shutil.copytree(str(item), str(adapter_classes_path / item.name))
                     log.info(f"Successfully moved {item} to new adapter_classes_path")
                 except Exception as e:
                     logger.warning(

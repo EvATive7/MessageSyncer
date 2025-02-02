@@ -30,11 +30,6 @@ def _get_config():
     return config.main()
 
 
-def init(get_config_function: Callable[[], config.MainConfig]):
-    global _get_config
-    _get_config = get_config_function
-
-
 class AdapterAlreadyExist(Exception): ...
 
 
@@ -220,7 +215,10 @@ async def warning(content: Struct):
     try:
         pushto = _get_config().warning.to
         for pusher in pushto:
-            await push_to(pusher, content)
+            try:
+                await push_to(pusher, content)
+            except:
+                log.warning(f"Failure to issue alarm to {pusher}: {e}", exc_info=True)
     except Exception as e:
         log.fatal(f"Failure to issue alarm: {e}", exc_info=True)
 
@@ -234,15 +232,14 @@ RefreshResult = list[RefreshResultSingle]
 
 
 async def _trigger_refresh(getter: Getter):
+    update_trigger(getter)
     task.create_task(refresh(getter))
 
 
 async def refresh(getter: Getter) -> RefreshResult:
-    update_trigger(getter)
-
     async def thread_worker():
         with network.force_proxies_patch():
-            result_data = await refresh_worker(getter)
+            result_data = await _refresh_worker(getter)
             return result_data
 
     loop = asyncio.get_event_loop()
@@ -253,7 +250,7 @@ async def refresh(getter: Getter) -> RefreshResult:
     return result
 
 
-async def refresh_worker(getter: Getter) -> RefreshResult:
+async def _refresh_worker(getter: Getter) -> RefreshResult:
     logger = log.getLogger("_refresh_worker")
     prefix = getter.class_name + "_"
 

@@ -1,7 +1,6 @@
 import logging
 from datetime import datetime
-from logging import *
-from logging import root
+from logging import debug, error, fatal, getLogger, info, root, warning
 from pathlib import Path
 
 import colorlog

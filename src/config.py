@@ -190,7 +190,7 @@ class MainConfig:
                 return
             util.set_nested_value(new_dict, new_nested_key, value)
 
-        # To V2
+        # From V1 To V2
         _move_var_dict("proxies", "network.proxies", origin, new)
         _move_var_dict("refresh_when_start", "policy.refresh_when_start", origin, new)
         _move_var_dict("first_get_donot_push", "policy.skip_first", origin, new)
@@ -201,8 +201,11 @@ class MainConfig:
         return new
 
 
-main_manager = get_config_manager(MainConfig, "main")
+main_config = get_config_manager(MainConfig, "main")
 
 
 def main():
-    return main_manager.value
+    if isinstance(main_config, HotReloadConfigManager):
+        return main_config.value
+    else:
+        return main_config

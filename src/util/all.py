@@ -90,35 +90,6 @@ def get_current_commit(repo_path: Path) -> str:
         return ""
 
 
-def dataclass_to_jsonschema(cls: Type) -> Dict[str, Any]:
-    if not dataclasses.is_dataclass(cls):
-        raise ValueError("Provided class is not a dataclass")
-
-    schema = {"type": "object", "properties": {}, "required": []}
-
-    for field in dataclasses.fields(cls):
-        field_schema = {"type": get_json_type(field.type)}
-        schema["properties"][field.name] = field_schema
-        if field.default is None and field.default_factory is dataclasses.MISSING:
-            schema["required"].append(field.name)
-
-    return schema
-
-
-def get_json_type(field_type: Any) -> str:
-    """Map Python types to JSON Schema types."""
-    if field_type in {str, int, float, bool}:
-        return field_type.__name__
-    elif field_type == list or field_type == List:
-        return "array"
-    elif field_type == dict or field_type == Dict:
-        return "object"
-    elif dataclasses.is_dataclass(field_type):
-        # Nested dataclass
-        return dataclass_to_jsonschema(field_type)
-    return "string"  # Default to string for unsupported types
-
-
 def get_nested_value(d: dict, path):
     keys = path.split(".")
     for key in keys:
