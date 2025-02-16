@@ -70,6 +70,11 @@ async def _refresh():
     core.update_getters()
 
     await core.refresh(core.registered_getters[0])
+    for _ in range(30):
+        if all([i.status == core.PushTaskStatus.SUCCEED for i in core.push_tasks]):
+            break
+        await asyncio.sleep(0.1)
+
     assert test_content_end.asdict() == test_content_start.asdict()
 
     article = store.Article.get_or_none(
