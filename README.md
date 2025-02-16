@@ -31,7 +31,7 @@ An fully asynchronous push framework.
 
 ### Docker
 
-1. Download [Compose File](../docker/compose.yml)
+1. Download [Compose File](./docker/compose.yml)
 1. Run `docker compose -f compose.yml up -d`
 
 ### Terminology
