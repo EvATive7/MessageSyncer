@@ -10,6 +10,7 @@ from fastapi import (
     Header,
     HTTPException,
     Path,
+    Query,
     Request,
     Response,
     status,
@@ -108,6 +109,40 @@ class AdapterInstallRequestBody:
     url: str
 
 
+@dataclass
+class PushTask:
+    id: str
+
+    status: core.PushTaskStatus
+    attempt_count: int
+
+    article_id: str
+    to: str
+
+    @staticmethod
+    def from_core(core_task: core.PushTask):
+        return PushTask(
+            id=core_task.id_,
+            status=core_task.status,
+            to=core_task.to,
+            article_id=core_task.article_id,
+            attempt_count=core_task.attempt_count,
+        )
+
+
+@dataclass
+class ConfigDetail:
+    name: str
+    dict: dict
+
+    @staticmethod
+    def from_HotReloadConfigManager(name: str, manager: config.HotReloadConfigManager):
+        return ConfigDetail(
+            name=name,
+            dict=manager.dict,
+        )
+
+
 @app.get("/", include_in_schema=False)
 async def _():
     return RedirectResponse("./docs")
@@ -132,7 +167,7 @@ def _get_adapter(adapter: str):
     return adapter
 
 
-@router.post("/adapter/", response_model=type(None), tags=["Adapter"])
+@router.post("/adapters/", response_model=type(None), tags=["Adapter"])
 async def install_adapter(body: AdapterInstallRequestBody, auth=Depends(authenticate)):
     try:
         core.install_adapter(body.url)
@@ -140,7 +175,7 @@ async def install_adapter(body: AdapterInstallRequestBody, auth=Depends(authenti
         raise HTTPException(status.HTTP_409_CONFLICT)
 
 
-@router.delete("/adapter/{adapter:str}", response_model=type(None), tags=["Adapter"])
+@router.delete("/adapters/{adapter:str}", response_model=type(None), tags=["Adapter"])
 async def uninstall_adapter(
     adapter: str = Depends(_get_adapter), auth=Depends(authenticate)
 ):
@@ -159,9 +194,12 @@ def _get_adapter_class(adapter_class: str) -> Getter:
 
 @router.get("/adapter_classes/", tags=["AdapterClass"])
 async def list_all_adapter_classes(
+    pagination: util.Pagination = Depends(),
     auth=Depends(authenticate),
 ) -> list[AdapterClassInfo]:
-    return [AdapterClassInfo.from_class(_c) for _c in core.imported_adapter_classes]
+    return pagination.paginate(
+        [AdapterClassInfo.from_class(_c) for _c in core.imported_adapter_classes]
+    )
 
 
 @router.get("/adapter_classes/{adapter_class:str}", tags=["AdapterClass"])
@@ -186,7 +224,20 @@ def _get_config_manager(config_name: str) -> config.HotReloadConfigManager:
     return config.get_config_manager(name=config_name)
 
 
-@router.get("/config/{config_name:str}", tags=["Config"])
+@router.get("/configs/", tags=["Config"])
+async def get_configs(
+    pageination: util.Pagination = Depends(),
+    auth=Depends(authenticate),
+) -> list[ConfigDetail]:
+    return pageination.paginate(
+        [
+            ConfigDetail.from_HotReloadConfigManager(name, config_manager)
+            for name, config_manager in config.inited_HotReloadConfigManagers.items()
+        ]
+    )
+
+
+@router.get("/configs/{config_name:str}", tags=["Config"])
 async def get_config(
     config_manager: config.HotReloadConfigManager = Depends(_get_config_manager),
     auth=Depends(authenticate),
@@ -194,7 +245,7 @@ async def get_config(
     return config_manager.dict
 
 
-@router.post("/config/{config_name:str}", tags=["Config"], response_model=type(None))
+@router.post("/configs/{config_name:str}", tags=["Config"], response_model=type(None))
 async def update_config(
     new: dict,
     config_manager: config.HotReloadConfigManager = Depends(_get_config_manager),
@@ -203,7 +254,7 @@ async def update_config(
     config_manager.save_dict(new)
 
 
-@router.get("/config/{config_name:str}/jsonschema", tags=["Config"])
+@router.get("/configs/{config_name:str}/jsonschema", tags=["Config"])
 async def get_config_jsonschema(
     config_manager: config.HotReloadConfigManager = Depends(_get_config_manager),
     auth=Depends(authenticate),
@@ -262,13 +313,12 @@ def _get_article(id: str) -> store.Article:
 
 @router.get("/articles/", tags=["Article"])
 async def list_articles(
-    page: int = 0, page_size: int = 10, auth=Depends(authenticate)
+    pageination: util.Pagination = Depends(),
+    auth=Depends(authenticate),
 ) -> list[Article]:
     return [
         Article(ar.id, ar.userId, ar.ts, ar.content.asdict())
-        for ar in store.Article.select()
-        .order_by(store.Article.ts.desc())
-        .paginate(page, page_size)
+        for ar in pageination.paginate(store.Article)
     ]
 
 
@@ -279,14 +329,23 @@ async def article(
     return Article(article.id, article.userId, article.ts, article.content.asdict())
 
 
-@router.get("/log/", tags=["Log"])
+def _log_pagination_params(
+    request: Request,
+    response: Response,
+    page: int = Query(-1),
+    per_page: int = Query(100, le=1000),
+):
+    return util.Pagination(
+        request=request, response=response, page=page, per_page=per_page
+    )
+
+
+@router.get("/logs/", tags=["Log"])
 async def list_log(
-    page: int = 0, page_size: int = 10, auth=Depends(authenticate)
+    pageination: util.Pagination = Depends(_log_pagination_params),
+    auth=Depends(authenticate),
 ) -> list[str]:
-    data_list = log.log_list
-    start_index = max(0, len(data_list) - (page + 1) * page_size)
-    end_index = len(data_list) - page * page_size
-    return data_list[start_index:end_index]
+    return pageination.paginate(log.active_log_file)
 
 
 def _get_task(task_id: str):
@@ -296,10 +355,8 @@ def _get_task(task_id: str):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
 
 
-@router.get("/task/", tags=["Task"])
-async def get_tasks(
-    done: bool | None = None,
-) -> list[str]:
+@router.get("/tasks/", tags=["Task"])
+async def get_tasks(done: bool | None = None, auth=Depends(authenticate)) -> list[str]:
     _final_tasks = list(task.tasks.keys())
     if done is not None:
         if done is True:
@@ -313,7 +370,7 @@ async def get_tasks(
     return _final_tasks
 
 
-@router.get("/task/{task_id}", tags=["Task"])
+@router.get("/tasks/{task_id}", tags=["Task"])
 async def task_status(
     task_: asyncio.Task = Depends(_get_task), auth=Depends(authenticate)
 ) -> dict:
@@ -321,6 +378,11 @@ async def task_status(
         return task_.result()
     else:
         return Response(None, status.HTTP_202_ACCEPTED)
+
+
+@router.get("/push_tasks/", tags=["PushTask"])
+async def get_push_tasks(auth=Depends(authenticate)) -> list[PushTask]:
+    return [PushTask.from_core(task) for task in core.push_tasks]
 
 
 app.include_router(router)
