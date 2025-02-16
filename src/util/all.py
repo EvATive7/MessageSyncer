@@ -3,6 +3,9 @@ import dataclasses
 import re
 import shutil
 import subprocess
+import threading
+import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List, Type, Union
 
@@ -116,3 +119,33 @@ def set_nested_value(d: dict, path, value):
             d[key] = value
         else:
             d = d.setdefault(key, {})
+
+
+async def to_thread(coro):
+    """
+    Executes the coroutine in the new thread and returns the result
+    :param coro: The coroutine object to be executed
+    :return: Implementation results of the coroutine
+    """
+    future = Future()
+
+    def thread_target():
+        try:
+            # Create a new event loop
+            new_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(new_loop)
+            # Execute coroutine and obtain results
+            result = new_loop.run_until_complete(coro)
+            future.set_result(result)
+        except Exception as e:
+            future.set_exception(e)
+        finally:
+            # Close event loop
+            new_loop.close()
+
+    # Create and start a new thread
+    thread = threading.Thread(target=thread_target)
+    thread.start()
+
+    # Convert current.future to asyncio.Future and wait for the results
+    return await asyncio.wrap_future(future)

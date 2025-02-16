@@ -3,6 +3,7 @@ src/version.py
 src/runtimeinfo.py
 data/
 static/
+CHANGELOG.md
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

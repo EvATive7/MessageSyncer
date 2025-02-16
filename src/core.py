@@ -1,5 +1,6 @@
 import asyncio
 import concurrent
+import enum
 import re
 import threading
 import time
@@ -10,6 +11,7 @@ import aiocron
 import git
 
 import config
+import const
 import importing
 import network
 import store
@@ -39,21 +41,82 @@ class AdapterNotFound(Exception): ...
 class AdapterClassNotImported(Exception): ...
 
 
+class PushTaskStatus(enum.Enum):
+    PENDING = 0
+    RUNNING = 1
+    SUCCEED = 2
+    FAILED = 3
+    WAITING_RETRY = 4
+
+
+class PushTask:
+    logger = log.getLogger("PushTask")
+
+    def __init__(self, article_id: str, to: str):
+        self.article_id = article_id
+        self.to = to
+        self.id_ = f"{article_id}->{to}"
+
+        record = store.Article.get_or_none(store.Article.id == article_id)
+        if record:
+            self.article = record.content
+        else:
+            self.article = None
+        self.status = PushTaskStatus.PENDING
+        self.attempt_count = 0
+
+    async def exec(self):
+        max_attempt_count = const.MAX_PUSH_ATTEMPT
+        for i in range(max_attempt_count):
+            attempt_flag = f"({i+1}/{max_attempt_count})"
+            self.attempt_count = i + 1
+            try:
+                self.status = PushTaskStatus.RUNNING
+                PushTask.logger.debug(f"{self.id_}: try{attempt_flag}")
+                if self.article:
+                    await push(self.to, self.article_id, self.article)
+                PushTask.logger.debug(f"{self.id_}: finished")
+                self.status = PushTaskStatus.SUCCEED
+                break
+            except Exception as e:
+                PushTask.logger.error(
+                    f"{self.id_}: failed{attempt_flag}", exc_info=True
+                )
+                if i + 1 >= max_attempt_count:
+                    self.status = PushTaskStatus.FAILED
+                    await warning(
+                        Struct().text(
+                            f"Failed to push to {self.to}: \n{self.article}\n: {e}"
+                        )
+                    )
+                else:
+                    self.status = PushTaskStatus.WAITING_RETRY
+                    await asyncio.sleep(const.PUSH_ATTEMPT_INTERVAL)
+
+    def __hash__(self):
+        return hash(self.id_)
+
+    def __str__(self):
+        return self.id_
+
+
+push_tasks: list[PushTask] = []
+
+
 def _get_pusher(pusher) -> tuple[Pusher, dict]:
     pusher_class, pusher_id, pusher_to = parse_pusher(pusher)
     pusher_class = _get_or_import_class(pusher_class, adapter_classes_path)
     return pusher_class(pusher_id), {"to": pusher_to}
 
 
-async def push_to(pusher, content: Struct):
+async def push(pusher, id_: str, content: Struct):
     pusher, detail = _get_pusher(pusher)
     preview_str = content.as_preview_str()
-    hash_ = hash(content)
 
     logger = log.getLogger("push")
-    logger.debug(f"{pusher}: {hash_}: start: {preview_str}")
-    await pusher.push(content, **detail)
-    logger.debug(f"{pusher}: {hash_}: finished")
+    logger.debug(f"{pusher}: {id_}: start: {preview_str}")
+    await util.to_thread(pusher.push(content, **detail))
+    logger.debug(f"{pusher}: {id_}: finished")
 
 
 def adapter_type_is(adapter: type, type_: type):
@@ -216,11 +279,11 @@ async def warning(content: Struct):
         pushto = _get_config().warning.to
         for pusher in pushto:
             try:
-                await push_to(pusher, content)
-            except:
-                log.warning(f"Failure to issue alarm to {pusher}: {e}", exc_info=True)
+                await push(pusher, "warning", content)
+            except Exception as e:
+                log.warning(f"Failed to issue alarm to {pusher}: {e}", exc_info=True)
     except Exception as e:
-        log.fatal(f"Failure to issue alarm: {e}", exc_info=True)
+        log.fatal(f"Failed to issue alarm: {e}", exc_info=True)
 
 
 @dataclass
@@ -237,17 +300,8 @@ async def _trigger_refresh(getter: Getter):
 
 
 async def refresh(getter: Getter) -> RefreshResult:
-    async def thread_worker():
-        with network.force_proxies_patch():
-            result_data = await _refresh_worker(getter)
-            return result_data
-
-    loop = asyncio.get_event_loop()
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        result = await loop.run_in_executor(
-            executor, lambda: asyncio.run(thread_worker())
-        )
-    return result
+    with network.force_proxies_patch():
+        return await _refresh_worker(getter)
 
 
 async def _refresh_worker(getter: Getter) -> RefreshResult:
@@ -271,7 +325,7 @@ async def _refresh_worker(getter: Getter) -> RefreshResult:
             logger.info(f"{getter}: got new article: {id_}")
             return False
 
-        list_ = await getter.list()
+        list_ = await util.to_thread(getter.list())
         logger.debug(f"{getter}: got latest list: {list_}")
         list_ = [
             prefix + id_ for id_ in list_ if not article_already_exists(prefix + id_)
@@ -289,39 +343,31 @@ async def _refresh_worker(getter: Getter) -> RefreshResult:
                 content_text = str(content)
                 # logger.info(content_text)
 
-                push = True
+                dopush = True
                 push_passed_reason = []
 
                 if getter._first:
                     if _get_config().policy.skip_first:
-                        push = False
+                        dopush = False
                         push_passed_reason.append("skip_first")
 
                 for rule in _get_config().policy.block_rules:
                     if re.match(rule, content_text) or re.search(rule, content_text):
-                        push = False
+                        dopush = False
                         push_passed_reason.append(f'block_rule "{rule}"')
 
                 if (
                     time.time() - result.ts
                 ) / 3600 / 24 > _get_config().policy.article_max_ageday:
-                    push = False
+                    dopush = False
                     push_passed_reason.append("exceed article_max_ageday")
 
-                if push:
-                    for push_detail in _parse_pairs()[getter]:
-                        try:
-                            await push_to(push_detail, content)
-                        except Exception as e:
-                            logger.error(
-                                f"{getter}: failed to push {id_} to {push_detail}: {e}",
-                                exc_info=True,
-                            )
-                            await warning(
-                                Struct().text(
-                                    f"Failed to push to {push_detail}: \n{content}\n: {e}"
-                                )
-                            )
+                if dopush:
+                    for to in _parse_pairs()[getter]:
+                        push_task = PushTask(id_, to)
+                        push_tasks.append(push_task)
+                        asyncio.create_task(push_task.exec())
+
                 else:
                     logger.debug(
                         "{}: skipped to push {} because: {}".format(
@@ -347,8 +393,8 @@ async def _refresh_worker(getter: Getter) -> RefreshResult:
 
             if use_merged:
                 try:
-                    detail = await getter.details(
-                        [id_.removeprefix(prefix) for id_ in list_]
+                    detail = await util.to_thread(
+                        getter.details([id_.removeprefix(prefix) for id_ in list_])
                     )
                     detail.user_id = prefix + detail.user_id
                     [get_or_create_article(_id, detail) for _id in list_]
@@ -363,7 +409,9 @@ async def _refresh_worker(getter: Getter) -> RefreshResult:
 
                 async def _process_signal_article(id_: str):
                     try:
-                        detail = await getter.detail(id_.removeprefix(prefix))
+                        detail = await util.to_thread(
+                            getter.detail(id_.removeprefix(prefix))
+                        )
                         detail.user_id = prefix + detail.user_id
                         get_or_create_article(id_, detail)
                         await process_result(id_, detail)

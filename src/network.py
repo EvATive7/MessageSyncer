@@ -25,20 +25,20 @@ def requests_proxy(*args, **kwargs):
         "requests.Session.request", *args, **kwargs
     )
     request_str = hash(total_str)
-    max_retry_time = const.PROXY_REQUEST_MAXRETRYTIME
-    for i in range(max_retry_time):
+    max_attempt_time = const.MAX_PROXY_REQUEST_ATTEMPT
+    for i in range(max_attempt_time):
         logger.debug(f"{request_str}: start: {total_str}")
+        attempt_flag = f"({i+1}/{max_attempt_time})"
         try:
-            retrystr = f"({i+1}/{max_retry_time})"
-            logger.debug(f"{request_str}: try{retrystr}")
+            logger.debug(f"{request_str}: try{attempt_flag}")
             start_time = time.time()
             result = original_request_method(*args, **kwargs)
             end_time = time.time()
             logger.debug(f"{request_str}: finished after {end_time-start_time} seconds")
             return result
         except Exception as e:
-            logger.warning(f"{request_str}: failed{retrystr}: {e}")
-            if i + 1 >= max_retry_time:
+            logger.warning(f"{request_str}: failed{attempt_flag}: {e}")
+            if i + 1 >= max_attempt_time:
                 raise e
 
 

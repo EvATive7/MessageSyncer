@@ -113,7 +113,7 @@ class HotReloadConfigManager(Generic[T]):
         return util.dataclass_to_jsonschema(self.type_)
 
 
-inited_HotReloadConfigManagers: dict[HotReloadConfigManager] = {}
+inited_HotReloadConfigManagers: dict[str, HotReloadConfigManager] = {}
 
 
 def get_config_manager(
